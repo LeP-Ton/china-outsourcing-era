@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { DIFFICULTY_LABELS, ORIGIN_LABELS, RULES, STRATEGY_LABELS } from '../simulation/data';
+import { SCENARIOS } from '../simulation/scenarios';
 import type { GameState } from '../simulation/types';
 import type { useGame } from '../persistence/store';
 import type { FeatureProps } from './model';
@@ -127,7 +128,8 @@ export function SettingsPage({ game, state, run, busy, navigate, openCompanySetu
     <div className="feature-split">
       <Section title="当前经营档案"><DescriptionList items={[
         { label: '企业名称', value: state.player.name }, { label: '经营地区', value: state.setup.city }, { label: '开局背景', value: ORIGIN_LABELS[state.setup.origin] }, { label: '难度', value: DIFFICULTY_LABELS[state.setup.difficulty] },
-        { label: '当前模拟月份', value: monthLabel(state.month) }, { label: '世界种子', value: state.setup.seed }, { label: '经营模式', value: state.setup.challenge ? `${state.setup.challenge} 年挑战` : '开放经营沙盒' }, { label: '累计结算', value: `${state.player.reports.length} 个月` },
+        { label: '当前模拟月份', value: monthLabel(state.month) }, { label: '世界种子', value: state.setup.seed },
+        { label: '经营模式', value: state.setup.scenario ? SCENARIOS[state.setup.scenario].name : state.setup.challenge ? `${state.setup.challenge} 年挑战` : '开放经营沙盒' }, { label: '累计结算', value: `${state.player.reports.length} 个月` },
       ]} /></Section>
       <Section title="经营自动化"><div className="feature-form">
         <label className="feature-field-inline"><input type="checkbox" checked={state.policies.autoHire} disabled={busy} onChange={(event) => { void run({ type: 'policies', values: { autoHire: event.target.checked } }); }} />项目缺编时自动招聘</label>

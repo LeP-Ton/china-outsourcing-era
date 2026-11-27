@@ -3,6 +3,8 @@ import test from 'node:test'
 import { advanceMonth, applyAction, defaultBidPlan, estimateBid } from '../src/simulation/engine'
 import { createDemoWorld } from '../src/simulation/demo'
 import { validateSave } from '../src/persistence/save-format'
+import { bidPreparation, bidPreparationCost } from '../src/simulation/operations'
+import { recruitingExpectation, scenarioProgress } from '../src/simulation/scenarios'
 import type { BidPlan, Business, Contract, GameAction, GameState, Tender } from '../src/simulation/types'
 import { createWorld, DEMO_SETUP } from '../src/simulation/world'
 
@@ -58,6 +60,79 @@ test('随机种子复现世界和月结，且预估与动作保留输入快照',
   assert.equal(state.bids.length, 0)
   assert.equal(next.bids.filter(bid => bid.companyId === state.player.id).length, 1)
   assert.deepEqual(close(state), close(identical))
+})
+
+test('投标准备按项目计点，旧档可继续计数，月结后按上期人数恢复', () => {
+  let state = world()
+  const starters = state.tenders.slice(0, 2)
+  assert.ok(starters.every(tender => tender.pilot && tender.deadline === 0 && bidPreparationCost(tender) === 1))
+  for (const tender of starters) state = play(state, { type: 'bid', tenderId: tender.id, plan: defaultBidPlan(state, tender) })
+  assert.deepEqual(bidPreparation(state), { limit: 4, used: 2, remaining: 2 })
+  const legacy = validateSave(JSON.parse(JSON.stringify(state)))
+  for (const bid of legacy.bids) delete bid.preparation
+  assert.deepEqual(bidPreparation(legacy), bidPreparation(state))
+  const rejected = state.tenders.find(tender => tender.business === 'delivery')!
+  rejected.headcount = 16
+  const result = applyAction(state, { type: 'bid', tenderId: rejected.id, plan: defaultBidPlan(state, rejected) })
+  assert.equal(result.ok, false)
+  assert.match(result.message, /剩余 2 点/)
+  assert.equal(result.state, state)
+  state = close(state)
+  assert.deepEqual(bidPreparation(state), { limit: 4, used: 0, remaining: 4 })
+  state.player.reports.at(-1)!.headcount = 51
+  assert.equal(bidPreparation(state).limit, 6)
+})
+
+test('队伍固定时降低招聘门槛不会改变交付，客户验收技能会改变实际得分', () => {
+  const { state, contract } = provision(world(), 'delivery')
+  contract.skillTarget = 66
+  const lowerHiring = structuredClone(state)
+  lowerHiring.contracts.find(item => item.id === contract.id)!.plan.skill = 0
+  const strictCustomer = structuredClone(lowerHiring)
+  strictCustomer.contracts.find(item => item.id === contract.id)!.skillTarget = 95
+  const delivered = (snapshot: GameState) => close(snapshot).contracts.find(item => item.id === contract.id)!
+  const normal = delivered(state)
+  const lowered = delivered(lowerHiring)
+  assert.equal(lowered.quality, normal.quality)
+  assert.equal(lowered.revenue, normal.revenue)
+  assert.ok(delivered(strictCustomer).quality < normal.quality)
+
+  const legacy = validateSave(JSON.parse(JSON.stringify(state)))
+  const restored = legacy.contracts.find(item => item.id === contract.id)!
+  delete restored.skillTarget
+  legacy.tenders.find(item => item.id === contract.tenderId)!.skill = 66
+  assert.equal(delivered(legacy).quality, normal.quality)
+})
+
+test('剧本改变市场约束，种子影响采购结构且存读档不会改变后续经营', () => {
+  const settings = { ...DEMO_SETUP, seed: '剧本回归', origin: 'bootstrap' } as const
+  const base = createWorld(settings)
+  const cash = createWorld({ ...settings, scenario: 'cash' })
+  assert.deepEqual(base.tenders.map(tender => tender.business), cash.tenders.map(tender => tender.business))
+  for (const tender of cash.tenders) {
+    assert.ok(tender.business === 'dispatch' ? tender.paymentMonths <= 2 : tender.paymentMonths >= (tender.business === 'staffing' ? 3 : 4))
+  }
+  const shortage = createWorld({ ...settings, scenario: 'shortage' })
+  assert.equal(shortage.market.segments.find(segment => segment.occupationId === 'production')!.supply, 100)
+  assert.equal(base.market.segments.find(segment => segment.occupationId === 'production')!.supply, 170)
+  assert.equal(recruitingExpectation(shortage, 'production', 5000), 5000)
+  shortage.month = 3
+  assert.equal(recruitingExpectation(shortage, 'production', 5000), 5650)
+  assert.equal(recruitingExpectation(shortage, 'software', 5000), 5000)
+  const quality = createWorld({ ...settings, scenario: 'quality' })
+  assert.ok(quality.tenders.some(tender => tender.business === 'delivery' && tender.quality >= 91))
+  const profiles = new Set(Array.from({ length: 15 }, (_, index) => createWorld({ ...settings, seed: `不同开局-${index}` }).market.procurementProfile))
+  assert.equal(profiles.size, 3)
+
+  let state = cash
+  for (let month = 0; month < 4; month++) state = close(state)
+  const restored = validateSave(JSON.parse(JSON.stringify(state)))
+  assert.deepEqual(JSON.parse(JSON.stringify(close(restored))), JSON.parse(JSON.stringify(close(state))))
+  for (let month = 4; month < 12; month++) state = close(state)
+  const final = scenarioProgress(state)
+  assert.ok(final?.complete)
+  assert.equal(final.passed, false)
+  assert.deepEqual(scenarioProgress(close(state)), final)
 })
 
 test('招标由玩家和竞争对手共同竞逐，NPC 有履约与实际招聘记录', () => {

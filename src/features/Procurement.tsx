@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { BUSINESS_LABELS, INDUSTRIES, RULES } from '../simulation/data';
 import { defaultBidPlan, estimateBid } from '../simulation/engine';
-import { marketWage, supplierChain } from '../simulation/operations';
+import { bidPreparation, bidPreparationCost, contractSkillTarget, marketWage, supplierChain } from '../simulation/operations';
 import type { BidPlan, Business, Client, Contract, GameState, Manager, Tender } from '../simulation/types';
 import { CONTRACT_LABELS, CONTRACT_TONES, clientName, companyName, industryName, monthLabel, occupationName, ownContracts, ownWorkers } from './model';
 import type { FeatureProps } from './model';
@@ -70,10 +70,12 @@ export function BiddingPage(props: FeatureProps) {
   const mine = state.bids.filter((bid) => bid.companyId === state.player.id);
   const bidsByTender = new Map(mine.map((bid) => [bid.tenderId, bid]));
   const rows = state.tenders.filter((tender) => (!status || tender.status === status) && (!business || tender.business === business));
+  const preparation = bidPreparation(state);
   return <>
     <PageHeader title="招投标管理" description="比较招采条件、测算方案并提交报价。到期后由客户统一评审。"><Button onClick={() => navigate('contracts')}>查看我的合同</Button></PageHeader>
     <Stats items={[
-      { label: '当前可投标', value: state.tenders.filter((tender) => tender.status === 'open').length, tone: 'info' },
+      { label: '本月投标准备', value: `剩余 ${preparation.remaining} / ${preparation.limit} 点`, note: '月结恢复额度，每 25 名上期在册员工加 1 点，上限 8 点', tone: preparation.remaining ? 'info' : 'warn' },
+      { label: '开放招采', value: state.tenders.filter((tender) => tender.status === 'open').length },
       { label: '待评审方案', value: mine.filter((bid) => bid.status === 'submitted').length },
       { label: '累计中标', value: mine.filter((bid) => bid.status === 'won').length, tone: 'good' },
       { label: '累计未中标', value: mine.filter((bid) => bid.status === 'lost').length },
@@ -82,9 +84,10 @@ export function BiddingPage(props: FeatureProps) {
       <select aria-label="筛选招标状态" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="open">接受投标</option><option value="awarded">已定标</option><option value="expired">已截止</option></select>
       <select aria-label="筛选业务类型" value={business} onChange={(event) => setBusiness(event.target.value)}><option value="">全部业务</option>{businessOptions()}</select>
     </>} empty="这个筛选条件下暂无项目。推进月份后将补充新的市场需求。" columns={[
-      { title: '项目名称', sort: (row) => row.title, render: (row) => <><strong>{row.title}</strong><small className="feature-subtext">{row.upstreamId ? `上游服务商 · ${companyName(state, row.upstreamId)}` : clientName(state, row.clientId)}</small></> },
+      { title: '项目名称', sort: (row) => row.title, render: (row) => <><strong>{row.title}</strong><small className="feature-subtext">{row.pilot ? '首月试单 · ' : ''}{row.upstreamId ? `上游服务商 · ${companyName(state, row.upstreamId)}` : clientName(state, row.clientId)}</small></> },
       { title: '业务模式', render: (row) => <Tag tone="info">{BUSINESS_LABELS[row.business]}</Tag> },
       { title: '需求人数', sort: (row) => row.headcount, render: (row) => `${number(row.headcount)} 人` },
+      { title: '准备额度', sort: bidPreparationCost, render: (row) => `${bidPreparationCost(row)} 点` },
       { title: '月度采购预算', sort: (row) => row.budget * row.headcount, render: (row) => <strong>{compactMoney(row.budget * row.headcount)}</strong> },
       { title: '合同期 / 账期', render: (row) => `${row.months} 月 / ${row.paymentMonths} 月` },
       { title: '评审月份', sort: (row) => row.deadline, render: (row) => monthLabel(row.deadline) },
@@ -104,20 +107,24 @@ function BidDialog({ state, tender, existing, close, run, busy }: FeatureProps &
   const suppliers = matches.length > 0 ? matches : state.suppliers;
   const maxDepth = supplierChain(state, { ...plan, depth: RULES.maxChainDepth - Number(Boolean(tender.upstreamId)) }).length;
   const editable = tender.status === 'open' && !existing;
+  const preparation = bidPreparationCost(tender);
+  const { remaining } = bidPreparation(state);
   const offers = state.bids.filter((item) => item.tenderId === tender.id).sort((a, b) => b.estimate.score - a.estimate.score);
   return <Modal title={editable ? '投标方案' : tender.status === 'open' ? '已提交方案' : '评审详情'} onClose={close}>
     <DescriptionList items={[
       { label: '项目名称', value: tender.title }, { label: '月度预算 / 人均', value: `${money(tender.budget * tender.headcount)} / ${money(tender.budget)}` },
       { label: '需求人数与岗位', value: `${tender.headcount} 人 · ${occupationName(tender.occupationId)}` }, { label: '合同期 / 付款周期', value: `${tender.months} 月 / ${tender.paymentMonths} 月` },
-      { label: '服务要求', value: `技能 ${tender.skill} · 质量 ${tender.quality} · 到岗 ${percent(tender.attendance * 100)}` },
+      { label: '客户验收要求', value: `技能 ${tender.skill} · 质量 ${tender.quality} · 到岗 ${percent(tender.attendance * 100)}` },
       { label: '定标月份', value: monthLabel(tender.deadline) },
+      { label: '准备额度', value: editable ? `需 ${preparation} 点，本月余 ${remaining} 点` : `${preparation} 点` },
     ]} />
     {editable ? <form className="feature-form" onSubmit={async (event) => { event.preventDefault(); if (numericValid && (await run({ type: 'bid', tenderId: tender.id, plan })).ok) close(); }}>
+      {tender.pilot && <Notice>这是为期 5 个月的同城试单。准备成本较低，仍需参与采购评审。</Notice>}
       <div className="feature-form-grid">
         <Field label="人均月服务报价（元）"><NumberInput value={plan.price} min={100} max={Math.floor(tender.budget * 1.03)} onChange={(value) => set('price', value)} /></Field>
         <Field label="人均税前月薪（元）"><NumberInput value={plan.wage} min={Math.ceil(Math.max(RULES.minimumWage, marketWage(state, tender.occupationId) * .54))} max={200000} onChange={(value) => set('wage', value)} /></Field>
         <Field label="拟服务人数"><NumberInput value={plan.headcount} min={Math.ceil(tender.headcount * .65)} max={tender.headcount} onChange={(value) => set('headcount', value)} /></Field>
-        <Field label="最低技能（分）"><NumberInput value={plan.skill} max={100} onChange={(value) => set('skill', value)} /></Field>
+        <Field label="自动招聘最低技能（分）" help="筛选自动招募和调配人员，合同仍按客户技能标准验收。"><NumberInput value={plan.skill} max={100} onChange={(value) => set('skill', value)} /></Field>
         <Field label="用工模式"><select value={plan.business} onChange={(event) => { const value = event.target.value as Business; setPlan((current) => ({ ...current, business: value, supplierId: null, subcontract: 0, depth: 0 })); }}>{businessOptions()}</select></Field>
         <Field label="现场实际管理方"><select value={plan.manager} onChange={(event) => set('manager', event.target.value as Manager)}><option value="provider">服务商管理</option><option value="client">客户直接管理</option></select></Field>
         <Field label="预计到岗周期（月）"><NumberInput value={plan.mobilization} max={6} onChange={(value) => set('mobilization', value)} /></Field>
@@ -127,7 +134,7 @@ function BidDialog({ state, tender, existing, close, run, busy }: FeatureProps &
         <Field label="合作供应商"><select value={plan.supplierId ?? ''} onChange={(event) => { const id = event.target.value; setPlan((old) => ({ ...old, supplierId: id || null, subcontract: id ? old.subcontract || .25 : 0, depth: id ? 1 : 0 })); }}><option value="">全部自营</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></Field>
         {plan.supplierId && <><Field label="分包比例（%）"><NumberInput value={Math.round(plan.subcontract * 100)} min={1} max={RULES.maxSubcontract * 100} onChange={(value) => set('subcontract', value / 100)} /></Field><Field label="分包层数"><NumberInput value={plan.depth} min={1} max={maxDepth} onChange={(value) => set('depth', value)} /></Field></>}
       </div>
-      {preview && <div className="feature-preview"><h3>方案测算</h3><DescriptionList items={[
+      {preview && <div className="feature-preview"><h3>达产后方案测算</h3><DescriptionList items={[
         { label: '预计月收入 / 成本', value: `${compactMoney(preview.revenue)} / ${compactMoney(preview.cost)}` },
         { label: '预计利润率', value: <Tag tone={preview.margin >= 0 ? 'good' : 'bad'}>{percent(preview.margin * 100)}</Tag> },
         { label: '预计到岗 / 交付质量', value: `${percent(preview.attendance * 100)} / ${Math.round(preview.quality)} 分` },
@@ -135,7 +142,8 @@ function BidDialog({ state, tender, existing, close, run, busy }: FeatureProps &
         { label: '预计垫资', value: compactMoney(preview.exposure) },
         { label: '合规风险 / 预评分', value: `${Math.round(preview.risk)} / ${Math.round(preview.score)} 分` },
       ]} /></div>}
-      <footer><Button onClick={close}>关闭</Button><Button primary type="submit" disabled={busy || !numericValid}>提交投标</Button></footer>
+      {remaining < preparation && <Notice tone="warn">本月准备额度不足。可查看低额度采购，或月结后再提交尚未截止的项目。</Notice>}
+      <footer><Button onClick={close}>关闭</Button><Button primary type="submit" disabled={busy || !numericValid || remaining < preparation}>提交投标</Button></footer>
     </form> : tender.status === 'open' && existing ? <>
       <DescriptionList items={[
         { label: '提交的人均服务报价', value: money(existing.price) }, { label: '提交的月薪预算', value: money(existing.wage) },
@@ -184,6 +192,7 @@ function ContractDialog({ state, contract, close, navigate, run, busy }: Feature
   const [confirm, setConfirm] = useState(false);
   const invoices = state.invoices.filter((invoice) => invoice.contractId === contract.id);
   const customer = state.clients.find((client) => client.id === contract.clientId);
+  const tender = state.tenders.find(item => item.id === contract.tenderId);
   const team = ownWorkers(state).filter((worker) => worker.contractId === contract.id);
   const teamWage = team.length ? team.reduce((sum, worker) => sum + worker.wage, 0) / team.length : null;
   return <Modal title="合同详情" onClose={close}>
@@ -192,6 +201,7 @@ function ContractDialog({ state, contract, close, navigate, run, busy }: Feature
       { label: '状态', value: <Tag tone={CONTRACT_TONES[contract.status]}>{CONTRACT_LABELS[contract.status]}</Tag> }, { label: '服务模式', value: BUSINESS_LABELS[contract.business] },
       { label: '最近一月服务收入', value: money(contract.revenue) }, { label: '累计服务收入', value: money(contract.cumulativeRevenue) },
       { label: '实际 / 要求到岗率', value: `${percent(contract.attendance * 100)} / ${percent(contract.attendanceTarget * 100)}` }, { label: '实际 / 要求交付质量', value: `${Math.round(contract.quality)} / ${Math.round(contract.qualityTarget)} 分` },
+      { label: '客户验收技能 / 自动招聘门槛', value: `${contractSkillTarget(contract, tender)} / ${contract.plan.skill} 分` },
       { label: '合同期限 / 剩余期限', value: `${contract.term} 月 / ${contract.remaining} 月` }, { label: '付款周期', value: `${contract.paymentMonths} 个月` },
       { label: '合规风险', value: `${Math.round(contract.risk)} 分` }, { label: '扣款', value: money(contract.penalties) },
       { label: '客户正式岗位参考月薪', value: customer ? money(customer.formalWage) : '—' },

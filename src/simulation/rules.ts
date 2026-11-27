@@ -87,10 +87,11 @@ export function evaluateDelivery(input: DeliveryInput) {
   const staffing = clamp(input.covered / Math.max(1, input.seats), 0, 1)
   const skill = clamp(input.skill / Math.max(1, input.targetSkill), 0.2, 1.25)
   const efficiency = clamp(input.efficiency, 0.7, 1.35)
+  const skillScore = 40 * Math.min(1, skill) + 30 * Math.max(0, skill - 1)
   // 管理与技术能够改善产出，缺岗和疲劳仍会挤压实际交付能力。
   const quality = input.covered === 0 ? 0 : clamp(
-    (30 + 43 * skill + 14 * staffing + input.management * 0.13
-      + (input.satisfaction - 58) * 0.16 - input.fatigue * 0.17) * efficiency,
+    21 + skillScore + 20 * staffing + input.management * 0.12
+      + (input.satisfaction - 58) * 0.14 - input.fatigue * 0.18 + (efficiency - 1) * 38,
   )
   const output = clamp(staffing * (0.66 + 0.33 * skill) * efficiency * (1 - input.fatigue / 300), 0, 1.2)
   const extraHours = yuan(clamp((1 - staffing) * 53 + Math.max(0, 1 - skill) * 24

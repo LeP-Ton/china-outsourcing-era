@@ -10,6 +10,8 @@ export type NewsKind = 'market' | 'customer' | 'labor' | 'finance' | 'business' 
 export type Severity = 'info' | 'warning' | 'critical'
 export type TechId = 'recruitment' | 'screening' | 'matching' | 'scheduling' | 'payroll' | 'analytics' | 'assessment' | 'audit' | 'suppliers'
 export type RecruitmentChannel = 'platform' | 'referral' | 'campus' | 'headhunter'
+export type ScenarioId = 'cash' | 'shortage' | 'quality'
+export type ProcurementProfile = 'frontline' | 'flexible' | 'specialist'
 
 export interface Setup {
   name: string
@@ -20,6 +22,7 @@ export interface Setup {
   difficulty: Difficulty
   origin: Origin
   challenge?: 5 | 10 | 20
+  scenario?: ScenarioId
 }
 
 export interface Occupation {
@@ -49,6 +52,7 @@ export interface WorldMarket {
   economy: number
   automation: number
   regulation: number
+  procurementProfile?: ProcurementProfile
   segments: MarketSegment[]
 }
 
@@ -173,6 +177,7 @@ export interface Tender {
   paymentMonths: number
   status: TenderStatus
   winnerId: string | null
+  pilot?: boolean
 }
 
 export interface BidPlan {
@@ -211,6 +216,7 @@ export interface Bid {
   month: number
   plan: BidPlan
   estimate: BidEstimate
+  preparation?: number
   status: 'submitted' | 'won' | 'lost'
 }
 
@@ -229,6 +235,7 @@ export interface Contract {
   term: number
   remaining: number
   paymentMonths: number
+  skillTarget?: number
   qualityTarget: number
   attendanceTarget: number
   signedAt: number | null
@@ -286,6 +293,7 @@ export interface MonthReport {
   averageIncome: number
   averageHours: number
   skill: number
+  scenarioDelivery?: { planned: number; covered: number; qualityTotal: number }
 }
 
 export interface GameNews {

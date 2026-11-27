@@ -1,6 +1,7 @@
 import { OCCUPATIONS, RULES } from './data'
 import { nextId, random, range } from './random'
 import { calculateTenderScore, clamp, evaluateDelivery, yuan } from './rules'
+import { recruitingExpectation, SCENARIO_MONTHS } from './scenarios'
 import type {
   Bid, BidEstimate, BidPlan, Business, Client, Company, Contract, GameState,
   NewsKind, RecruitmentChannel, Severity, Supplier, Tender, Worker,
@@ -76,6 +77,40 @@ export function monthlyCost(state: GameState, plan: BidPlan, occupationId: strin
     + supplierSeats(plan) * subcontractRate(state, plan, occupationId))
 }
 
+export function bidPreparationCost(tender: Tender): number {
+  return 1 + Number(tender.business === 'delivery') + Number(tender.headcount >= 16)
+}
+
+export function bidPreparation(state: GameState) {
+  const limit = 4 + Math.min(4, Math.floor((state.player.reports.at(-1)?.headcount ?? 0) / 25))
+  const used = state.bids.reduce((total, bid) => {
+    if (bid.companyId !== state.player.id || bid.month !== state.month) return total
+    if (bid.preparation !== undefined) return total + bid.preparation
+    const tender = state.tenders.find(item => item.id === bid.tenderId)
+    return total + (tender ? bidPreparationCost(tender) : 1)
+  }, 0)
+  return { limit, used, remaining: Math.max(0, limit - used) }
+}
+
+export function contractSkillTarget(contract: Contract, tender?: Tender): number {
+  return contract.skillTarget ?? tender?.skill ?? OCCUPATIONS.find(item => item.id === contract.occupationId)?.skill ?? 55
+}
+
+export function effectiveSkill(worker: Worker): number {
+  return worker.skill * (0.79 + worker.efficiency / 320)
+}
+
+export function serviceRevenue(business: Business, price: number, seats: number,
+  quality: number, qualityTarget: number, attendance: number, attendanceTarget: number, output: number) {
+  const fullPrice = price * seats
+  const base = business === 'delivery' ? fullPrice * (attendance * 0.31 + Math.min(1.08, output) * 0.69) : fullPrice * attendance
+  const bonus = business === 'delivery'
+    ? fullPrice * clamp((quality - qualityTarget - 3) * 0.007, 0, 0.09) * clamp((attendance - 0.73) * 4.2, 0, 1) : 0
+  const penalty = yuan(Math.min(base * 0.43, fullPrice * (
+    Math.max(0, attendanceTarget - attendance) * 0.25 + Math.max(0, qualityTarget - quality) * 0.0036)))
+  return { revenue: Math.max(0, yuan(base + bonus - penalty)), penalty }
+}
+
 function clientFor(state: GameState, tender: Tender | Contract): Client | undefined {
   return state.clients.find(client => client.id === tender.clientId)
 }
@@ -109,10 +144,10 @@ export function makeBidPlan(state: GameState, tender: Tender, company: Company):
   const supplier = company.strategy === 'channel' ? state.suppliers.find(candidate => candidate.specialty === tender.business) : undefined
   const subcontract = supplier && tender.headcount >= 5 ? 0.35 : 0
   const plan: BidPlan = {
-    price: yuan(tender.budget * offer), wage: yuan(wage * specialization),
+    price: yuan(tender.budget * offer), wage: yuan(wage * specialization * (tender.business === 'delivery' ? 1.055 : 1)),
     benefit: company.id === state.player.id ? state.policies.defaultBenefit : company.strategy === 'steady' ? 430 : 260,
     training: company.strategy === 'premium' ? 230 : 135, management: tender.business === 'delivery' ? 720 : 480,
-    headcount: tender.headcount, skill: tender.skill, mobilization: 1, business: tender.business,
+    headcount: tender.headcount, skill: tender.skill - (tender.business === 'delivery' ? 3 : 0), mobilization: 1, business: tender.business,
     manager: tender.business === 'dispatch' ? 'client' : 'provider',
     subcontract, supplierId: subcontract ? supplier?.id ?? null : null, depth: subcontract ? 1 : 0,
   }
@@ -130,49 +165,69 @@ function estimateCompanyBid(state: GameState, tender: Tender, plan: BidPlan, com
   const wage = marketWage(state, tender.occupationId)
   const wageRatio = plan.wage / Math.max(1, wage)
   const selfSeats = staffedSeats(plan)
-  const qualified = candidates.filter(worker => worker.skill >= plan.skill - 16
-    && ((worker.status === 'market' && worker.expectation <= plan.wage * 1.14 && worker.city === company.city)
-      || (worker.employerId === company.id && worker.contractId === null)))
-  const outsideCandidates = Math.max(0, (segment?.supply ?? 0) - qualified.length) * 0.05
-  const reserve = qualified.length + outsideCandidates
+  const idle: Worker[] = []
+  const applicants: { worker: Worker; priority: number }[] = []
+  let reserve = 0
+  for (const worker of candidates) {
+    if (worker.skill < plan.skill) continue
+    if (worker.status === 'employed' && worker.employerId === company.id && worker.contractId === null) idle.push(worker)
+    if (worker.status !== 'market') continue
+    const local = worker.city === company.city
+    const expectation = recruitingExpectation(state, worker.occupationId, worker.expectation)
+    if (expectation > plan.wage * (local ? 1.22 : 1.12)) continue
+    applicants.push({ worker, priority: worker.skill * 0.85 + Number(local) * 11 - expectation / Math.max(1, plan.wage) * 30 })
+    reserve += local ? 1 : 0.55
+  }
+  const idleAssigned = idle.sort((a, b) => b.skill - a.skill).slice(0, selfSeats)
+  const vacancies = selfSeats - idleAssigned.length
   const difficulty = clamp(46 + (1 - wageRatio) * 90 + (plan.skill - 55) * 0.67
     + ((segment?.demand ?? 0) / Math.max(1, segment?.supply ?? 1) - 1) * 11
     - Math.min(22, reserve / Math.max(1, selfSeats) * 7) - company.tech * 0.11)
-  const supplier = supplierChain(state, plan)[0]
-  const external = supplier ? Math.min(supplierSeats(plan), supplier.capacity) * clamp(supplier.quality / 94, 0.55, 1) : 0
-  const hiringRate = clamp(0.92 + (wageRatio - 1) * 0.66 - difficulty * 0.0021
+  const chain = supplierChain(state, plan)
+  const supplier = chain[0]
+  const chainQuality = supplier ? chain.reduce((sum, item) => sum + item.quality, 0) / chain.length - (chain.length - 1) * 4 : 0
+  const external = supplier ? Math.min(supplierSeats(plan), ...chain.map(item => item.capacity)) * clamp(supplier.quality / 90, 0.55, 1) : 0
+  const hiringRate = clamp(0.95 + (wageRatio - 1) * 0.66 - difficulty * 0.0021
     + company.tech * 0.0011, 0.20, 1)
-  const covered = Math.min(selfSeats, reserve, selfSeats * hiringRate) + external
-  const blendedSkill = clamp(plan.skill + (wageRatio - 0.89) * 20 - difficulty * 0.04
-    - Math.max(0, plan.depth - 1) * 3 * plan.subcontract)
-  const report = evaluateDelivery({ seats: tender.headcount, covered, skill: blendedSkill, targetSkill: tender.skill,
-    satisfaction: 65, fatigue: 12, management: Math.min(100, plan.management / 10), efficiency: 1 + company.tech * 0.0015 })
+  const hired = Math.min(vacancies, reserve, vacancies * hiringRate)
+  const sample = applicants.sort((a, b) => b.priority - a.priority).slice(0, Math.ceil(hired * 1.5))
+  const hireSkill = sample.reduce((sum, { worker }) => sum + effectiveSkill(worker), 0) / Math.max(1, sample.length)
+  const covered = idleAssigned.length + hired + external
+  const blendedSkill = (idleAssigned.reduce((sum, worker) => sum + effectiveSkill(worker), 0)
+    + hired * hireSkill + external * chainQuality * 0.86) / Math.max(1, covered)
+  const business = commissionedBusiness(tender, plan)
+  const player = company.id === state.player.id
+  const report = evaluateDelivery({ seats: plan.headcount, covered, skill: blendedSkill, targetSkill: tender.skill,
+    satisfaction: 65, fatigue: 12, management: Math.min(100, plan.management / 10), efficiency: deliveryEfficiency(state, company, business, plan) })
   const attendance = clamp(covered / Math.max(1, tender.headcount), 0, 1)
   const deviation = plan.business === tender.business ? 0 : plan.business === 'delivery' || tender.business === 'delivery' ? 16 : 7
   const quality = clamp(report.quality - deviation)
   const ramp = mobilizationShare(plan, 1)
-  const performanceBonus = tender.business === 'delivery'
-    ? deliveryBonus(quality, tender.quality, attendance) : 0
-  const revenue = yuan(plan.price * (tender.business === 'delivery' ? tender.headcount
-    * (attendance * 0.31 + Math.min(1.08, report.output) * 0.69 + performanceBonus) : covered))
+  const { revenue } = serviceRevenue(business, plan.price, plan.headcount, report.quality, tender.quality,
+    covered / Math.max(1, plan.headcount), tender.attendance, report.output)
   const cost = monthlyCost(state, plan, tender.occupationId)
   const exposure = yuan(cost * (tender.paymentMonths + 1) + selfSeats * CHANNEL_COST.platform)
-  const audit = company.id === state.player.id && state.technologies.includes('audit') ? 8 : 0
-  const risk = yuan(clamp(riskTarget(state, commissionedBusiness(tender, plan), plan, client, attendance) - audit))
+  const audit = player && state.technologies.includes('audit') ? 8 : 0
+  const risk = yuan(clamp(riskTarget(state, business, plan, client, attendance) - audit))
+  const qualityPriority = state.setup.scenario === 'quality' && state.month < SCENARIO_MONTHS && tender.business === 'delivery'
   const score = calculateTenderScore({
     quote: plan.price, budget: tender.budget, quality, coverage: attendance * (0.67 + ramp * 0.33) * 100,
     reputation: company.reputation, relationship: client?.trust[company.id] ?? 48, compliance: company.compliance * (1 - risk / 230),
     stability: clamp(80 + (company.cash - company.payables - exposure) / Math.max(10000, exposure) * 21),
-    priceWeight: clamp((tender.business === 'delivery' ? 20 : 27) + (client?.pressure ?? 55) * 0.19 - (client?.compliance ?? 65) * 0.11),
-    qualityWeight: clamp((tender.business === 'delivery' ? 33 : 21) + ((client?.quality ?? 75) - 60) * 0.48),
+    priceWeight: clamp((qualityPriority ? 15 : tender.business === 'delivery' ? 20 : 27) + (client?.pressure ?? 55) * 0.19 - (client?.compliance ?? 65) * 0.11),
+    qualityWeight: qualityPriority ? 40 : clamp((tender.business === 'delivery' ? 28 : 21) + ((client?.quality ?? 75) - 60) * 0.48),
   })
   const turnover = clamp(0.028 + (1 - wageRatio) * 0.11 + risk * 0.00035 - plan.benefit * 0.000012, 0.003, 0.30)
   return { revenue, cost, margin: revenue ? (revenue - cost) / revenue : 0, difficulty: yuan(difficulty),
     attendance, quality, turnover, exposure, risk, score }
 }
 
-export function deliveryBonus(quality: number, target: number, coverage: number): number {
-  return clamp((quality - target - 3) * 0.011, 0, 0.16) * clamp((coverage - 0.73) * 4.2, 0, 1)
+export function deliveryEfficiency(state: GameState, company: Company, business: Business, plan: BidPlan) {
+  const player = company.id === state.player.id
+  return 1 + Math.min(0.13, company.tech * 0.0033)
+    + (player && state.technologies.includes('scheduling') ? 0.041 : 0)
+    + (player && state.technologies.includes('analytics') ? 0.016 : 0)
+    - (plan.manager === 'client' && business === 'delivery' ? 0.065 : 0)
 }
 
 export function estimateBid(state: GameState, tender: Tender, plan: BidPlan): BidEstimate {
@@ -197,17 +252,21 @@ export function adjudicateTender(state: GameState, tender: Tender, candidates: W
     && entry.companyId === state.player.id && entry.status === 'submitted')
   const entries: Bid[] = playerBid ? [playerBid] : []
   const active = state.contracts.filter(contract => contract.status === 'active')
+  const client = clientFor(state, tender)
   for (const rival of state.competitors) {
     if (rival.status !== 'operating' || rival.id === tender.upstreamId) continue
+    const local = rival.city === client?.city
+    // 短期入门试单只吸引同城服务商，竞争对手较少为小单另组投标团队。
+    if (tender.pilot && !local) continue
     const managed = active.filter(contract => contract.companyId === rival.id)
     const reserved = managed.reduce((sum, contract) => sum + monthlyCost(state, contract.plan, contract.occupationId) * 0.57, 0)
     const plan = makeBidPlan(state, tender, rival)
     const estimate = estimateCompanyBid(state, tender, plan, rival, candidates)
     if (rival.cash - rival.payables - reserved < Math.max(estimate.cost, estimate.exposure * 0.52) || managed.length >= 9) continue
-    const appetite = 0.46 + (rival.city === clientFor(state, tender)?.city ? 0.17 : 0)
+    const appetite = 0.46 + (local ? 0.17 : 0)
       + (rival.strategy === 'expansion' ? 0.16 : 0) + (managed.length === 0 ? 0.11 : 0) - managed.length * 0.033
     const marginTolerance = rival.strategy === 'expansion' && rival.cash > 1_100_000 ? -0.05 : 0.017
-    if (estimate.margin < marginTolerance || random(state) > appetite) continue
+    if (estimate.margin < marginTolerance || random(state) > appetite * (tender.pilot ? 0.30 : 1)) continue
     entries.push({ id: nextId(state, 'bid'), tenderId: tender.id, companyId: rival.id, month: state.month,
       plan, estimate, status: 'submitted' })
   }
@@ -228,7 +287,7 @@ export function adjudicateTender(state: GameState, tender: Tender, candidates: W
       clientId: tender.clientId, upstreamId: tender.upstreamId, parentContractId: tender.parentContractId,
       title: tender.title, occupationId: tender.occupationId, business: commissionedBusiness(tender, winner.plan),
       plan: { ...winner.plan }, headcount: winner.plan.headcount, term: tender.months, remaining: tender.months,
-      paymentMonths: tender.paymentMonths, qualityTarget: tender.quality, attendanceTarget: tender.attendance,
+      paymentMonths: tender.paymentMonths, skillTarget: tender.skill, qualityTarget: tender.quality, attendanceTarget: tender.attendance,
       signedAt: forPlayer ? null : state.month, status: forPlayer ? 'unsigned' : 'active',
       quality: 0, attendance: 0, revenue: 0, cumulativeRevenue: 0, penalties: 0,
       risk: winner.estimate.risk, progress: 0, lastSupplierCost: 0,
@@ -241,7 +300,7 @@ export function adjudicateTender(state: GameState, tender: Tender, candidates: W
 export function acceptChance(state: GameState, worker: Worker, company: Company, wage: number, channel: RecruitmentChannel) {
   const channelEffect = channel === 'headhunter' ? 0.25 : channel === 'referral' ? 0.17
     : channel === 'campus' ? (worker.experience < 3 ? 0.20 : -0.19) : 0
-  const wageRatio = wage / Math.max(1, worker.expectation)
+  const wageRatio = wage / Math.max(1, recruitingExpectation(state, worker.occupationId, worker.expectation))
   const mobility = worker.city === company.city ? 0.12 : -0.09
   const cityWage = wage / Math.max(1, marketWage(state, worker.occupationId))
   return clamp(0.39 + (wageRatio - 0.88) * 1.10 + (cityWage - 0.9) * 0.13
@@ -261,7 +320,8 @@ export function hireWorker(state: GameState, worker: Worker, company: Company, w
   worker.hiredAt = state.month
   worker.benchSince = contract ? undefined : state.month
   worker.wage = yuan(wage)
-  worker.satisfaction = yuan(clamp(53 + (wage / worker.expectation - 0.9) * 37 + (company.reputation - 50) * 0.08))
+  worker.satisfaction = yuan(clamp(53 + (wage / recruitingExpectation(state, worker.occupationId, worker.expectation) - 0.9) * 37
+    + (company.reputation - 50) * 0.08))
   worker.belonging = 35
   company.totalHires++
   history(worker, state.month, '接受录用', `${company.name} · 税前月薪 ${yuan(wage)} 元${contract ? ` · ${contract.title}` : ' · 待岗'}`)

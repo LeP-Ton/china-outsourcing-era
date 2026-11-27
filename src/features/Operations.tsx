@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BUSINESS_LABELS, RULES, TECHNOLOGIES } from '../simulation/data';
+import { BUSINESS_LABELS, PROCUREMENT_PROFILES, RULES, TECHNOLOGIES } from '../simulation/data';
 import { subcontractRate, supplierChain, supplierSeats } from '../simulation/operations';
 import type { Contract, GameState, NewsKind } from '../simulation/types';
 import { NEWS_LABELS, SEVERITY_LABELS, SEVERITY_TONES, clientName, companyName, latestReport, monthLabel, occupationName, ownContracts, ownWorkers } from './model';
@@ -22,8 +22,9 @@ export function MarketPage({ state, navigate }: FeatureProps) {
     const quotes = marketQuotes.get(id);
     return quotes ? quotes.total / quotes.count : 0;
   }
+  const procurement = state.market.procurementProfile && PROCUREMENT_PROFILES[state.market.procurementProfile];
   return <>
-    <PageHeader title="市场中心" description="跟踪岗位供需、招聘薪酬与服务行业景气。"><Button onClick={() => navigate('rankings')}>比较竞争企业</Button><Button onClick={() => navigate('bidding')}>查看在招项目</Button></PageHeader>
+    <PageHeader title="市场中心" description={procurement ? `本局常规采购偏向${procurement.name}。可查看各岗位供需和薪酬。` : '跟踪岗位供需、招聘薪酬与服务行业景气。'}><Button onClick={() => navigate('rankings')}>比较竞争企业</Button><Button onClick={() => navigate('bidding')}>查看在招项目</Button></PageHeader>
     <Stats items={[
       { label: '综合景气变化', value: `${state.market.economy > 0 ? '+' : ''}${state.market.economy} 点`, tone: state.market.economy < 0 ? 'warn' : 'good' },
       { label: '人才需求指数', value: number(state.market.segments.reduce((sum, segment) => sum + segment.demand, 0)) },

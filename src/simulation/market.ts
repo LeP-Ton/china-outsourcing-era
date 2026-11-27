@@ -2,8 +2,9 @@ import { CITIES, INDUSTRIES, OCCUPATIONS, REGION_WAGE, RULES } from './data'
 import { addNews, adjudicateTender, history, marketWage, supplierSeats } from './operations'
 import { nextId, pick, random, range } from './random'
 import { clamp, yuan } from './rules'
-import { createInitialTender, createWorker } from './world'
-import type { Business, Client, GameState, Tender, Worker } from './types'
+import { isShortageMonth, isShortageRole, recruitingExpectation } from './scenarios'
+import { createTender, createWorker, procurementBusiness } from './world'
+import type { Client, GameState, Tender, Worker } from './types'
 
 export function closeTenders(state: GameState) {
   const candidatesByRole = new Map<string, Worker[]>()
@@ -53,7 +54,7 @@ function evolveClient(state: GameState, client: Client, externalOutlay: number) 
   client.conversionSlots = Math.max(0, client.headcountCap - client.formalStaff)
   if (state.month % 6 === 0 && client.condition >= 60 && client.conversionSlots >= 3) {
     const hires = state.workers.filter(worker => worker.status === 'market' && worker.occupationId === client.occupationId
-      && worker.city === client.city && worker.expectation <= client.formalWage)
+      && worker.city === client.city && recruitingExpectation(state, worker.occupationId, worker.expectation) <= client.formalWage)
       .sort((a, b) => b.skill + b.stability * 0.1 - a.skill - a.stability * 0.1)
       .slice(0, Math.min(2, Math.floor(client.conversionSlots / 3)))
     for (const worker of hires) {
@@ -83,13 +84,9 @@ function publishTenders(state: GameState) {
     const available = client.demand - client.formalStaff - active.reduce((sum, contract) => sum + contract.headcount, 0)
     const recurringBudget = active.reduce((sum, contract) => sum + contract.plan.price * contract.headcount, 0)
     if (available < 7 || recurringBudget > client.budget * 0.9) continue
-    const business: Business = pick(state, client.quality > 76 ? ['delivery', 'delivery', 'staffing'] : ['dispatch', 'staffing', 'staffing', 'delivery'])
-    const tender = createInitialTender(state, client, business, state.month + supply.length + 4)
+    const tender = createTender(state, client, procurementBusiness(state, client))
     tender.headcount = Math.min(available, tender.headcount + Math.floor(state.month / 15))
     tender.budget = yuan(tender.budget * (1 + (49 - client.pressure) / 235))
-    tender.quality = client.quality
-    tender.deadline = state.month + (random(state) < 0.36 ? 1 : 0)
-    tender.paymentMonths = Math.round(clamp(client.paymentMonths + (client.credit < 45 ? 1 : 0), 1, 4))
     supply.push(tender)
   }
   const subcontract = publishSubcontract(state)
@@ -114,7 +111,7 @@ function publishSubcontract(state: GameState): Tender | undefined {
     const seats = Math.min(Math.floor(parent.headcount * 0.33), desired, capacity)
     const price = yuan(parent.plan.price * 0.93)
     if (seats < 3 || upstream.cash - upstream.payables < price * seats * 2) continue
-    const tender = createInitialTender(state, client, parent.business, state.month + 4)
+    const tender = createTender(state, client, parent.business)
     tender.title = `${upstream.brand} · ${parent.title}协作包`
     tender.parentContractId = parent.id
     tender.upstreamId = upstream.id
@@ -137,6 +134,10 @@ export function updateMarket(state: GameState) {
   }
   if (state.month > 0 && state.month % 18 === 0) {
     addNews(state, 'technology', '自动化改变初级岗位招聘结构', `行业自动化指数升至 ${yuan(state.market.automation)}。基础客服与标注需求承压，算法与数据岗位需求上行。`)
+  }
+  const shortage = state.setup.scenario === 'shortage' && isShortageMonth(state.month)
+  if (shortage && !isShortageMonth(state.month - 1)) {
+    addNews(state, 'labor', '一线岗位进入季节性用工荒', '生产、仓储和门店人才流入放缓，求职者期望薪资上升 13%。可提前储备或调配在册员工。', 'warning')
   }
   const priorOutlays = new Map<string, number>()
   for (const invoice of state.invoices) {
@@ -164,11 +165,13 @@ export function updateMarket(state: GameState) {
       ? Math.max(0, client.demand - client.formalStaff) : 0), 0)
     const automation = occupation.id === 'ai' ? 1 + state.market.automation / 160
       : ['support', 'labeling', 'production'].includes(occupation.id) ? 1 - state.market.automation / 255 : 1
-    const targetDemand = occupation.demand * 0.57 + localDemand * 0.18 * (1 + state.market.economy / 150) * automation
+    const strained = shortage && isShortageRole(occupation.id)
+    const targetDemand = (occupation.demand * 0.57 + localDemand * 0.18 * (1 + state.market.economy / 150) * automation) * (strained ? 1.18 : 1)
     segment.growth = clamp((targetDemand - segment.demand) / Math.max(1, segment.demand), -0.25, 0.25) * 0.21
     segment.demand = Math.max(5, yuan(segment.demand * (1 + segment.growth)))
     const seekers = supply.get(segment.occupationId) ?? 0
-    const inflow = Math.min(seekers < 58 ? 12 : 5, Math.max(0, Math.round((190 - seekers) * 0.045)))
+    const normalInflow = Math.min(seekers < 58 ? 12 : 5, Math.max(0, Math.round((190 - seekers) * 0.045)))
+    const inflow = strained ? Math.floor(normalInflow * 0.25) : normalInflow
     for (let index = 0; index < inflow && state.workers.length < 4200; index++) {
       const city = random(state) < 0.69 ? state.setup.city : pick(state, CITIES)
       state.workers.push(createWorker(state, occupation, city))

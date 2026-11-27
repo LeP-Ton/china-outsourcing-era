@@ -1,12 +1,11 @@
 import { applyAction, advanceMonth, defaultBidPlan } from './engine'
 import { nextId } from './random'
 import type { BidPlan, Business, Contract, GameState } from './types'
-import { createWorld, DEMO_SETUP } from './world'
+import { createTender, createWorld, DEMO_SETUP } from './world'
 
 function addOpeningContract(state: GameState, clientIndex: number, business: Business, headcount: number, priceMultiplier: number, title: string) {
   const client = state.clients[clientIndex]!
-  const currentTender = state.tenders.find(tender => tender.clientId === client.id)!
-  const tender = { ...currentTender, id: nextId(state, 'tender'), title, business, headcount, months: 12, deadline: 0, attendance: 0.86, quality: 72 }
+  const tender = { ...createTender(state, client, business), title, headcount, months: 12, deadline: state.month, attendance: 0.86, quality: 72 }
   const wage = state.market.segments.find(segment => segment.occupationId === client.occupationId)!.wage
   const plan: BidPlan = {
     ...defaultBidPlan(state, tender), wage: Math.round(wage * 1.14 / 100) * 100,
@@ -17,7 +16,7 @@ function addOpeningContract(state: GameState, clientIndex: number, business: Bus
   const contract: Contract = {
     id: nextId(state, 'contract'), tenderId: tender.id, companyId: state.player.id, clientId: client.id,
     upstreamId: null, title, occupationId: tender.occupationId, business, plan, headcount, term: 12,
-    remaining: 12, paymentMonths: client.paymentMonths, qualityTarget: tender.quality,
+    remaining: 12, paymentMonths: client.paymentMonths, skillTarget: tender.skill, qualityTarget: tender.quality,
     attendanceTarget: tender.attendance, signedAt: 0, status: 'active', quality: 0, attendance: 0,
     revenue: 0, cumulativeRevenue: 0, penalties: 0, risk: 0, progress: 0, lastSupplierCost: 0,
   }

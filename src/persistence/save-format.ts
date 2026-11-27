@@ -1,4 +1,5 @@
-import { BUSINESS_LABELS, CITIES, DIFFICULTY_LABELS, OCCUPATIONS, ORIGIN_LABELS, TECHNOLOGIES } from '../simulation/data'
+import { BUSINESS_LABELS, CITIES, DIFFICULTY_LABELS, OCCUPATIONS, ORIGIN_LABELS, PROCUREMENT_PROFILES, TECHNOLOGIES } from '../simulation/data'
+import { SCENARIOS } from '../simulation/scenarios'
 import type { GameState, Setup } from '../simulation/types'
 
 const COLLECTIONS = ['competitors', 'clients', 'workers', 'suppliers', 'tenders', 'bids',
@@ -22,8 +23,9 @@ export function normalizeSetup(setup: Setup): Setup {
   if (!name || name.length > 48 || !brand || brand.length > 16 || !seed || seed.length > 80
     || !CITIES.some(value => value === city) || !Object.hasOwn(DIFFICULTY_LABELS, setup.difficulty)
     || !Object.hasOwn(ORIGIN_LABELS, setup.origin) || !safeLogo(setup.logo)
-    || (setup.challenge !== undefined && ![5, 10, 20].includes(setup.challenge))) {
-    throw new Error('请检查企业名称、品牌、城市、随机种子、难度和标志图片。')
+    || (setup.challenge !== undefined && ![5, 10, 20].includes(setup.challenge))
+    || (setup.scenario !== undefined && (!Object.hasOwn(SCENARIOS, setup.scenario) || setup.challenge !== undefined))) {
+    throw new Error('请检查企业名称、品牌、城市、随机种子、难度、经营模式和标志图片。')
   }
   return { ...setup, name, brand, seed, city }
 }
@@ -45,6 +47,8 @@ export function validateSave(value: unknown): GameState {
     || !finiteFields(value.pending, ['recruitment', 'training', 'research', 'disputes', 'management', 'financing', 'repayments'])
     || !value.market.segments.every(segment => object(segment) && typeof segment.occupationId === 'string' && finiteFields(segment, ['wage', 'supply', 'demand', 'growth']))
     || !finiteFields(value.market, ['economy', 'automation', 'regulation'])
+    || (value.market.procurementProfile !== undefined
+      && (typeof value.market.procurementProfile !== 'string' || !Object.hasOwn(PROCUREMENT_PROFILES, value.market.procurementProfile)))
     || !['autoHire', 'autoRenew', 'autoPayroll', 'overtimeCompensation'].every(key => typeof (value.policies as Record<string, unknown>)[key] === 'boolean')
     || !finiteFields(value.policies, ['defaultBenefit'])) {
     throw new Error('存档格式不完整或版本不兼容。')
@@ -78,12 +82,17 @@ export function validateSave(value: unknown): GameState {
     && Number.isFinite(company.wageArrears ?? 0) && Number.isFinite(company.overtimeArrears ?? 0)
     && (company.overtimeArrears ?? 0) >= 0 && (company.overtimeArrears ?? 0) <= (company.wageArrears ?? 0)
     && (company.wageArrears ?? 0) <= company.payables
-    && company.reports.every(report => object(report) && finiteFields(report, ['month', 'revenue', 'costs', 'profit', 'cash', 'received', 'receivables'])))
+    && company.reports.every(report => object(report) && finiteFields(report, ['month', 'revenue', 'costs', 'profit', 'cash', 'received', 'receivables'])
+      && (report.scenarioDelivery === undefined || (object(report.scenarioDelivery)
+        && finiteFields(report.scenarioDelivery, ['planned', 'covered', 'qualityTotal'])))))
   if (!trustedCompanies
     || state.clients.some(client => !object(client.trust) || !occupations.has(client.occupationId))
+    || state.tenders.some(tender => tender.pilot !== undefined && typeof tender.pilot !== 'boolean')
     || state.contracts.some(contract => !object(contract.plan) || !Number.isFinite(contract.plan.price)
+      || (contract.skillTarget !== undefined && (!Number.isFinite(contract.skillTarget) || contract.skillTarget < 0 || contract.skillTarget > 100))
       || !Object.hasOwn(BUSINESS_LABELS, contract.business) || !companies.has(contract.companyId)
       || !clients.has(contract.clientId) || !occupations.has(contract.occupationId))
+    || state.bids.some(bid => bid.preparation !== undefined && (!Number.isInteger(bid.preparation) || bid.preparation < 1 || bid.preparation > 3))
     || state.workers.some(worker => !Array.isArray(worker.history) || !occupations.has(worker.occupationId)
       || !['market', 'employed', 'client', 'inactive'].includes(worker.status)
       || typeof worker.name !== 'string' || !Number.isFinite(worker.skill) || !Number.isFinite(worker.expectation)

@@ -1,7 +1,13 @@
-import type { Business, Difficulty, Industry, Occupation, Origin, PageId, Strategy, Technology } from './types'
+import type { Business, Difficulty, Industry, Occupation, Origin, PageId, ProcurementProfile, Strategy, Technology } from './types'
 
 export const BUSINESS_LABELS: Record<Business, string> = {
   dispatch: '劳务派遣', staffing: '人力外包', delivery: '专业业务外包',
+}
+
+export const PROCUREMENT_PROFILES: Record<ProcurementProfile, { name: string; businesses: Business[] }> = {
+  frontline: { name: '一线扩编', businesses: ['dispatch', 'dispatch', 'dispatch', 'staffing', 'delivery'] },
+  flexible: { name: '弹性外包', businesses: ['dispatch', 'staffing', 'staffing', 'staffing', 'delivery'] },
+  specialist: { name: '专业交付', businesses: ['dispatch', 'staffing', 'delivery', 'delivery', 'delivery'] },
 }
 
 export const PAGE_LABELS: Record<PageId, string> = {

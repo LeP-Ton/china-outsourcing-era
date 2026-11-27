@@ -307,6 +307,8 @@ h1, h2, h3, p { margin: 0; }
 .challenge-progress progress::-webkit-progress-value { border-radius: 9px; background: var(--accent); }
 .challenge-metrics { display: flex; gap: 14px; color: var(--muted); font-size: 10.5px; }
 .challenge-metrics strong { display: block; margin-top: 3px; color: var(--ink); font-size: 12.5px; font-weight: 650; }
+.scenario-metrics { flex-shrink: 0; }
+.scenario-metrics .scenario-metric--met { color: var(--success); }
 
 .notice-wrap { position: relative; }
 .notice-popup { position: absolute; top: 40px; right: -28px; width: min(336px, 88vw); z-index: 8; border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 8px 26px #17294c23; background: var(--surface); }

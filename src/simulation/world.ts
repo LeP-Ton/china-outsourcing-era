@@ -1,6 +1,8 @@
-import { CITIES, INDUSTRIES, OCCUPATIONS, ORIGINS, REGION_WAGE, START_FUNDS } from './data'
+import { CITIES, INDUSTRIES, OCCUPATIONS, ORIGINS, PROCUREMENT_PROFILES, REGION_WAGE, START_FUNDS } from './data'
 import { nextId, pick, random, range, seedNumber } from './random'
-import type { Business, Client, Company, GameState, Occupation, Setup, Strategy, Tender, Worker } from './types'
+import { clamp } from './rules'
+import { isShortageRole, SCENARIO_MONTHS } from './scenarios'
+import type { Business, Client, Company, GameState, Occupation, ProcurementProfile, Setup, Strategy, Tender, Worker } from './types'
 
 export const DEMO_SETUP: Setup = {
   name: '中衡人力资源服务有限公司', brand: '中衡人力', city: '上海',
@@ -80,19 +82,54 @@ export function createWorker(state: GameState, occupation: Occupation, city: str
   }
 }
 
-export function createInitialTender(state: GameState, client: Client, business: Business, index: number): Tender {
+export function procurementBusiness(state: GameState, client: Client): Business {
+  if (state.month < SCENARIO_MONTHS) {
+    if (state.setup.scenario === 'quality') return pick(state, ['delivery', 'delivery', 'delivery', 'staffing', 'dispatch'])
+    if (state.setup.scenario === 'shortage' && isShortageRole(client.occupationId)) return pick(state, ['staffing', 'staffing', 'dispatch'])
+  }
+  const profile = state.market.procurementProfile
+  if (!profile) return pick(state, client.quality > 76 ? ['delivery', 'delivery', 'staffing'] : ['dispatch', 'staffing', 'staffing', 'delivery'])
+  return pick(state, PROCUREMENT_PROFILES[profile].businesses)
+}
+
+export function createTender(state: GameState, client: Client, business: Business, starter = false): Tender {
   const occupation = OCCUPATIONS.find(({ id }) => id === client.occupationId)!
-  const headcount = Math.min(client.demand - client.formalStaff, index === 1 ? 12 : integer(state, 7, 22))
+  const firstYear = state.month < SCENARIO_MONTHS ? state.setup.scenario : undefined
+  const professional = business === 'delivery'
+  const strictQuality = professional && firstYear === 'quality'
+  const surge = firstYear === 'shortage' && !professional && isShortageRole(occupation.id)
+  const headcount = Math.min(client.demand - client.formalStaff,
+    starter ? integer(state, 8, 11) : surge ? integer(state, 14, 23) : integer(state, 8, 22))
   const wage = state.market.segments.find(({ occupationId }) => occupationId === occupation.id)!.wage
-  const budget = Math.round(wage * (business === 'delivery' ? range(state, 1.79, 2.16) : range(state, 1.60, 1.85)) / 100) * 100
+  const budget = Math.round(wage * (professional ? range(state, 1.83, 2.05) : range(state, 1.67, 1.91)) / 100) * 100
+  const creditTerm = client.paymentMonths + Number(client.credit < 45)
+  const paymentMonths = business === 'dispatch' ? Math.min(2, creditTerm)
+    : clamp(creditTerm, firstYear === 'cash' ? (professional ? 4 : 3) : professional ? 2 : 1, 4)
   const suffix: Record<Business, string> = { delivery: '专业服务项目', staffing: '人力外包采购', dispatch: '劳务派遣采购' }
   return {
     id: nextId(state, 'tender'), title: `${client.name}${occupation.name.replace(/工程师|专员|技工|员$/, '')}${suffix[business]}`,
     clientId: client.id, upstreamId: null, business, occupationId: occupation.id,
-    headcount, budget, months: index === 1 ? 9 : integer(state, 6, 12), deadline: index % 3 === 0 ? 1 : 0,
-    skill: Math.max(42, occupation.skill - integer(state, 2, 9)), quality: Math.min(80, client.quality),
-    attendance: 0.90, paymentMonths: client.paymentMonths, status: 'open', winnerId: null,
+    headcount, budget, months: starter ? 5 : integer(state, 6, 12), deadline: state.month + Number(!starter && random(state) < 0.36),
+    skill: clamp(occupation.skill + (professional ? integer(state, 0, 4) + (strictQuality ? 5 : 0) : -integer(state, 2, 8)), 40, 100),
+    quality: professional ? Math.max(strictQuality ? 91 : 77, client.quality) : client.quality,
+    attendance: 0.90, paymentMonths, status: 'open', winnerId: null,
+    ...(starter ? { pilot: true } : {}),
   }
+}
+
+function openingTenders(state: GameState): Tender[] {
+  const ordered = state.clients.map(client => ({ client, priority: range(state, 0, 3) + Number(client.city === state.setup.city) * 0.65 }))
+    .sort((a, b) => b.priority - a.priority).map(({ client }) => client)
+  const starters = ordered.filter(client => client.city === state.setup.city && marketEntryRole(client.occupationId)).slice(0, 2)
+  const other = ordered.filter(client => !starters.includes(client)).slice(0, 7)
+  return [
+    ...starters.map((client, index) => createTender(state, client, index === 0 ? 'staffing' : 'dispatch', true)),
+    ...other.map((client, index) => createTender(state, client, index === 0 ? 'delivery' : procurementBusiness(state, client))),
+  ]
+}
+
+function marketEntryRole(occupationId: string) {
+  return OCCUPATIONS.some(occupation => occupation.id === occupationId && occupation.skill <= 62)
 }
 
 export function createWorld(setup: Setup): GameState {
@@ -110,6 +147,7 @@ export function createWorld(setup: Setup): GameState {
     policies: { autoHire: false, autoRenew: false, autoPayroll: true, overtimeCompensation: true, defaultBenefit: 320 },
     pending: { recruitment: 0, training: 0, research: 0, disputes: 0, management: 0, financing: 0, repayments: 0 },
   }
+  state.market.procurementProfile = pick(state, Object.keys(PROCUREMENT_PROFILES) as ProcurementProfile[])
   state.competitors = COMPETITOR_NAMES.map((name, index) => {
     const strategy = STRATEGIES[index]!
     return company(`npc-${index + 1}`, `${name}有限公司`, index < 3 ? setup.city : pick(state, CITIES),
@@ -119,11 +157,12 @@ export function createWorld(setup: Setup): GameState {
   })
   state.competitors.forEach((competitor, index) => { competitor.brand = COMPETITOR_NAMES[index]! })
   state.clients = CLIENT_NAMES.map((name, index) => createClient(state, name, index))
-  state.workers = Array.from({ length: 1530 }, (_, index) => {
+  for (let index = 0; index < 1530; index++) {
     const occupation = OCCUPATIONS[index % OCCUPATIONS.length]!
+    if (setup.scenario === 'shortage' && isShortageRole(occupation.id) && index >= OCCUPATIONS.length * 100) continue
     const city = random(state) < 0.72 ? setup.city : pick(state, CITIES)
-    return createWorker(state, occupation, city)
-  })
+    state.workers.push(createWorker(state, occupation, city))
+  }
   state.market.segments = OCCUPATIONS.map(occupation => ({
     occupationId: occupation.id,
     wage: Math.round(occupation.wage * (REGION_WAGE[setup.city] ?? 1) / 100) * 100,
@@ -136,14 +175,11 @@ export function createWorld(setup: Setup): GameState {
     quality: integer(state, 64, 88), compliance: integer(state, 52, 88), capacity: integer(state, 28, 65),
     rate: range(state, 1.24, 1.42), partnerId: index % 2 === 0 ? `supplier-${index + 2}` : null,
   }))
-  const slate: Business[] = ['delivery', 'staffing', 'dispatch', 'staffing', 'dispatch', 'delivery']
-  state.tenders = Array.from({ length: 9 }, (_, index) =>
-    createInitialTender(state, state.clients[index]!, slate[index % slate.length]!, index),
-  )
+  state.tenders = openingTenders(state)
   state.news.push({
     id: nextId(state, 'news'), month: 0, kind: 'market', severity: 'info',
     title: `${setup.city}新年外部用工采购启动`,
-    detail: `${state.clients.length} 家模拟客户已建立采购档案，首批 ${state.tenders.length} 个采购项目开放投标。`,
+    detail: `${state.clients.length} 家模拟客户已建立采购档案，首批 ${state.tenders.length} 个采购项目开放投标。常规采购以${PROCUREMENT_PROFILES[state.market.procurementProfile].name}为主。`,
   })
   return state
 }

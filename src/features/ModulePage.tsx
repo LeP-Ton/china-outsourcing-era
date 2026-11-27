@@ -39,6 +39,6 @@ function ModuleContent({ module, game, navigate, openCompanySetup }: ModuleProps
   const Page = module === 'settings' ? null : pages[module];
   return <div className="feature-page">
     {Page ? <Page {...shared} /> : <SettingsPage {...shared} game={game} openCompanySetup={openCompanySetup} />}
-    {message && <aside className="feature-toast"><Notice tone={message.ok ? 'good' : 'bad'}>{message.text}</Notice><button className="feature-close" type="button" aria-label="关闭操作反馈" onClick={() => setMessage(null)}>×</button></aside>}
+    {message && <aside className={message.ok ? 'feature-toast feature-toast--success' : 'feature-toast'}><Notice tone={message.ok ? 'good' : 'bad'}>{message.text}</Notice><button className="feature-close" type="button" aria-label="关闭操作反馈" onClick={() => setMessage(null)}>×</button></aside>}
   </div>;
 }

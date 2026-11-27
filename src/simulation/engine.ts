@@ -1,7 +1,7 @@
 import { RULES, TECHNOLOGIES } from './data'
 import { advanceMonth, possibleRenewal, renewContract, settlePayroll } from './month'
 import {
-  addNews, availableCash, CHANNEL_COST, dismissWorker, estimateBid, hireWorker, history, marketWage,
+  addNews, availableCash, bidPreparation, bidPreparationCost, CHANNEL_COST, dismissWorker, estimateBid, hireWorker, history, marketWage,
   releaseWorkers, severance, staffedSeats, validBid, validSupplier,
 } from './operations'
 import { nextId } from './random'
@@ -46,10 +46,13 @@ function submitBid(state: GameState, action: Extract<GameAction, { type: 'bid' }
   requireAction(tender && tender.deadline >= state.month, '该采购已经停止接收投标。')
   requireAction(!state.bids.some(item => item.companyId === state.player.id && item.tenderId === tender.id), '该采购已提交过本公司的投标报价。')
   requireAction(validBid(state, tender, action.plan), '方案超出采购预算、人员范围或支持的分包条件，请核对表单。')
+  const preparation = bidPreparationCost(tender)
+  const { remaining } = bidPreparation(state)
+  requireAction(preparation <= remaining, `本月剩余 ${remaining} 点投标准备，本项目需要 ${preparation} 点。月结后恢复额度。`)
   const estimate = estimateBid(state, tender, action.plan)
   state.bids.unshift({ id: nextId(state, 'bid'), tenderId: tender.id, companyId: state.player.id, month: state.month,
-    plan: { ...action.plan }, estimate, status: 'submitted' })
-  return '投标方案已提交，将在截止月与其他参标企业统一评审。'
+    plan: { ...action.plan }, estimate, preparation, status: 'submitted' })
+  return `投标方案已提交，本月还剩 ${remaining - preparation} 点准备额度。采购将在截止月评审。`
 }
 
 function recruit(state: GameState, action: Extract<GameAction, { type: 'hire' }>): string {

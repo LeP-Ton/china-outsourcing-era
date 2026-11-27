@@ -110,6 +110,7 @@
 .feature-toast { z-index: 95; position: fixed; right: 23px; bottom: 22px; display: flex; gap: 8px; align-items: center; max-width: calc(100% - 46px); padding: 3px 7px 3px 3px; border: 1px solid var(--border, #e4eaf3); border-radius: 7px; background: var(--surface, #fff); box-shadow: 0 4px 25px rgb(8 19 37 / 19%); }
 .feature-toast .feature-notice { max-width: 430px; }
 .feature-toast .feature-close { flex-shrink: 0; }
+.feature-page:has(.feature-modal-backdrop) .feature-toast--success { z-index: 89; }
 .feature-network-step { display: flex; gap: 8px; }
 .feature-network-node > small { font-size: 10px; color: var(--muted, #65748e); }
 .feature-news-body { line-height: 1.7; font-size: 13px; }

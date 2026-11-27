@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { BUSINESS_LABELS, OCCUPATIONS, RULES } from '../simulation/data';
 import { severance } from '../simulation/operations';
+import { recruitingExpectation } from '../simulation/scenarios';
 import type { Contract, Manager, RecruitmentChannel, Worker } from '../simulation/types';
 import { SEVERITY_LABELS, SEVERITY_TONES, clientName, latestReport, monthLabel, occupationName, ownContracts, ownWorkers } from './model';
 import type { FeatureProps } from './model';
@@ -43,6 +44,7 @@ export function RecruitmentPage({ state, navigate, run, busy }: FeatureProps) {
   const validSelected = selected.filter((id) => matchIds.has(id));
   const maxSelected = RULES.maxWorkersPerAction;
   const shownWage = wage ?? Math.round(defaultWage);
+  const expectation = (candidate: Worker) => recruitingExpectation(state, candidate.occupationId, candidate.expectation);
   return <>
     <PageHeader title="招聘管理" description="按岗位或项目筛选候选人，设定薪资并发出录用邀约。"><Button onClick={() => navigate('staffing')}>查看项目缺口</Button></PageHeader>
     <Stats items={[
@@ -66,21 +68,21 @@ export function RecruitmentPage({ state, navigate, run, busy }: FeatureProps) {
       { title: '目标岗位', sort: (row) => row.occupationId, render: (row) => occupationName(row.occupationId) },
       { title: '工作经验', sort: (row) => row.experience, render: (row) => `${row.experience} 年` },
       { title: '专业技能', sort: (row) => row.skill, render: (row) => <Meter value={row.skill} label={`${Math.round(row.skill)} 分`} /> },
-      { title: '预期月薪', sort: (row) => row.expectation, render: (row) => money(row.expectation) },
+      { title: '预期月薪', sort: expectation, render: (row) => money(expectation(row)) },
       { title: '操作', render: (row) => <LinkButton onClick={() => setWorkerId(row.id)}>查看简历</LinkButton> },
     ]} /></Section>
-    {worker && <WorkerDialog worker={worker} close={() => setWorkerId('')} />}
+    {worker && <WorkerDialog worker={worker} wageExpectation={expectation(worker)} close={() => setWorkerId('')} />}
   </>;
 }
 
-function WorkerDialog({ worker, contract, close }: { worker: Worker; contract?: Contract; close: () => void }) {
+function WorkerDialog({ worker, contract, wageExpectation = worker.expectation, close }: { worker: Worker; contract?: Contract; wageExpectation?: number; close: () => void }) {
   return <Modal title={`${worker.name} · 人才档案`} onClose={close}>
     <DescriptionList items={[
       { label: '城市 / 年龄', value: `${worker.city} · ${worker.age} 岁` }, { label: '最高学历', value: worker.education },
       { label: '职业', value: occupationName(worker.occupationId) }, { label: '从业经验', value: `${worker.experience} 年` },
       { label: '技术能力', value: `${Math.round(worker.skill)} 分` }, { label: '工作效率', value: `${Math.round(worker.efficiency)} 分` },
       { label: '当前状态', value: workerStatus[worker.status] }, { label: '当前项目', value: contract?.title ?? '—' },
-      { label: '期望月薪', value: money(worker.expectation) }, { label: '实际约定月薪', value: worker.wage ? money(worker.wage) : '—' },
+      { label: '期望月薪', value: money(wageExpectation) }, { label: '实际约定月薪', value: worker.wage ? money(worker.wage) : '—' },
       ...(worker.status === 'employed' ? [
         { label: '最近月实际工时', value: worker.lastHours == null ? '—' : `${Math.round(worker.lastHours)} 小时` },
         { label: '最近月实发收入', value: worker.lastIncome == null ? '—' : money(worker.lastIncome) },

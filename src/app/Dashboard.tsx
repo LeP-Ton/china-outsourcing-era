@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { BUSINESS_LABELS } from '../simulation/data';
 import { staffedSeats } from '../simulation/operations';
+import { scenarioProgress, SCENARIO_MONTHS } from '../simulation/scenarios';
 import type { GameNews, GameState, MonthReport } from '../simulation/types';
 import { Icon, type IconName } from './Icon';
 import { compactMoney, currency, gameMonth, integer, percent, shortMonth } from './format';
@@ -262,6 +263,27 @@ function ChallengeStatus({ state }: { state: GameState }) {
   </section>;
 }
 
+function ScenarioStatus({ state }: { state: GameState }) {
+  const result = scenarioProgress(state);
+  if (!result) return null;
+  const status = result.endedEarly ? '企业提前停止经营，剧本未达标。' : result.complete
+    ? `剧本${result.passed ? '达标' : '未达标'}，已结算，可继续沙盒经营。`
+    : `已结算 ${state.month} / ${SCENARIO_MONTHS} 月 · ${result.scenario.terms}`;
+  return <section className="panel challenge-panel" aria-labelledby="scenario-title">
+    <div className="challenge-heading">
+      <ToneIcon name="rankings" tone={result.passed ? 'green' : result.complete ? 'amber' : 'violet'} />
+      <div><h2 id="scenario-title">{result.scenario.name}</h2><p>{status}</p></div>
+    </div>
+    <div className="challenge-metrics scenario-metrics">{result.metrics.map(metric => {
+      const format = (value: number) => metric.unit === 'money' ? compactMoney(value) : metric.unit === 'percent'
+        ? percent(Math.floor(value * 10) / 10, 1) : metric.unit === 'seats' ? `${integer(value)} 人月` : `${(Math.floor(value * 10) / 10).toFixed(1)} 分`;
+      return <div key={metric.label}>{metric.label}
+        <strong className={metric.value >= metric.target ? 'scenario-metric--met' : undefined}>{format(metric.value)} / {format(metric.target)}</strong>
+      </div>;
+    })}</div>
+  </section>;
+}
+
 export function Dashboard({ state, busy, navigate, advance, openCompanySetup }: {
   state: GameState;
   busy: boolean;
@@ -281,6 +303,7 @@ export function Dashboard({ state, busy, navigate, advance, openCompanySetup }: 
       </div>
     </section>
     {bankrupt && <div className="overview-alert" role="alert"><Icon name="alert" size={16} />企业已破产。可在系统设置中读取存档，或创建新企业。</div>}
+    <ScenarioStatus state={state} />
     <ChallengeStatus state={state} />
     <KpiCards state={state} />
     <div className="overview-columns"><Trend state={state} /><TodoPanel state={state} navigate={navigate} /></div>

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 import { CITIES, DIFFICULTY_LABELS, ORIGIN_LABELS, START_FUNDS } from '../simulation/data';
-import type { Difficulty, Origin, Setup } from '../simulation/types';
+import { SCENARIOS } from '../simulation/scenarios';
+import type { Difficulty, Origin, ScenarioId, Setup } from '../simulation/types';
 import { compactMoney } from './format';
 import { Icon } from './Icon';
 
@@ -26,9 +27,10 @@ export function CompanySetup({ city, busy, onClose, onCreate, onDemo }: {
   const [difficulty, setDifficulty] = useState<Difficulty>('standard');
   const [origin, setOrigin] = useState<Origin>('bootstrap');
   const [seed, setSeed] = useState(randomSeed);
-  const [challenge, setChallenge] = useState<Setup['challenge']>();
+  const [mode, setMode] = useState('');
   const [error, setError] = useState('');
   const [logoBusy, setLogoBusy] = useState(false);
+  const scenario = Object.hasOwn(SCENARIOS, mode) ? mode as ScenarioId : undefined;
 
   useEffect(() => {
     const element = dialog.current;
@@ -74,7 +76,8 @@ export function CompanySetup({ city, busy, onClose, onCreate, onDemo }: {
     }
     setError('');
     try {
-      await onCreate({ ...clean, logo, city: base, difficulty, origin, challenge });
+      const challenge = mode && !scenario ? Number(mode) as Setup['challenge'] : undefined;
+      await onCreate({ ...clean, logo, city: base, difficulty, origin, challenge, scenario });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '创建企业失败。');
     }
@@ -119,8 +122,10 @@ export function CompanySetup({ city, busy, onClose, onCreate, onDemo }: {
           </select>
         </label>
         <label className="dialog-field">经营模式
-          <select value={challenge ?? ''} onChange={event => setChallenge(event.target.value ? Number(event.target.value) as Setup['challenge'] : undefined)}>
-            <option value="">开放式沙盒</option><option value="5">5 年挑战</option><option value="10">10 年挑战</option><option value="20">20 年挑战</option>
+          <select value={mode} onChange={event => setMode(event.target.value)} aria-describedby={scenario && 'setup-scenario-description'}>
+            <option value="">开放式沙盒</option>
+            <optgroup label="一年剧本">{Object.entries(SCENARIOS).map(([id, item]) => <option key={id} value={id}>{item.name}</option>)}</optgroup>
+            <optgroup label="长期挑战"><option value="5">5 年挑战</option><option value="10">10 年挑战</option><option value="20">20 年挑战</option></optgroup>
           </select>
         </label>
         <div className="dialog-field"><label htmlFor="setup-seed">世界种子</label>
@@ -133,6 +138,9 @@ export function CompanySetup({ city, busy, onClose, onCreate, onDemo }: {
           <small>PNG、JPG、WebP 或 GIF，最多 1.5 MB。</small>
         </label>
       </div>
+      {scenario && <div className="dialog-notice" id="setup-scenario-description">
+        <Icon name="information" size={14} /><span>{SCENARIOS[scenario].terms} {SCENARIOS[scenario].objective}</span>
+      </div>}
       {error && <p className="dialog-error" role="alert">{error}</p>}
       <div className="dialog-notice"><Icon name="information" size={14} />创建企业或载入演示将替换当前自动存档。</div>
       <footer className="dialog-footer">

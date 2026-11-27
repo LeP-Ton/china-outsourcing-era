@@ -1,11 +1,12 @@
 import { RULES, TECHNOLOGIES } from './data'
 import { closeTenders, updateMarket } from './market'
 import {
-  addNews, CHANNEL_COST, deliveryBonus, dismissWorker, hireWorker, history, mobilizationShare, releaseWorkers,
-  riskTarget, severance, staffedSeats, subcontractRate, supplierChain, supplierSeats,
+  addNews, CHANNEL_COST, contractSkillTarget, deliveryEfficiency, dismissWorker, effectiveSkill, hireWorker, history,
+  mobilizationShare, releaseWorkers, riskTarget, serviceRevenue, severance, staffedSeats, subcontractRate, supplierChain, supplierSeats,
 } from './operations'
 import { nextId, random, range } from './random'
 import { clamp, evaluateDelivery, evaluateWorkerMonth, yuan } from './rules'
+import { isShortageMonth, isShortageRole, recruitingExpectation, SCENARIO_MONTHS } from './scenarios'
 import type { Company, Contract, GameResult, GameState, MonthReport, Worker } from './types'
 
 interface Ledger {
@@ -139,7 +140,7 @@ function fillVacancies(state: GameState, companies: Map<string, Company>, ledger
     }
     let vacancy = target - assigned.length
     if (vacancy <= 0) continue
-    const available = (idleByRole.get(role) ?? []).filter(worker => !worker.contractId)
+    const available = (idleByRole.get(role) ?? []).filter(worker => !worker.contractId && worker.skill >= contract.plan.skill)
       .sort((a, b) => b.skill - a.skill || order.get(a.id)! - order.get(b.id)!)
     for (const worker of available.slice(0, vacancy)) {
       worker.contractId = contract.id
@@ -150,12 +151,13 @@ function fillVacancies(state: GameState, companies: Map<string, Company>, ledger
     if (vacancy <= 0) continue
     const committed = wagesByCompany.get(company.id) ?? 0
     if (company.cash - company.payables < committed * 0.46 + ledger.report.recruitment) continue
-    const matching = (openMarket.get(contract.occupationId) ?? []).filter(worker => worker.status === 'market')
+    const matching = (openMarket.get(contract.occupationId) ?? []).filter(worker => worker.status === 'market' && worker.skill >= contract.plan.skill)
     const agePreference = state.clients.find(client => client.id === contract.clientId)?.agePreference
     const usesScreening = isPlayer && state.technologies.includes('screening')
     const usesMatching = isPlayer && state.technologies.includes('matching')
     const match = (worker: Worker) => worker.skill * (usesMatching ? 1.3 : 0.85)
-      + (worker.city === company.city ? 11 : 0) - worker.expectation / Math.max(1, contract.plan.wage) * 30
+      + (worker.city === company.city ? 11 : 0)
+      - recruitingExpectation(state, worker.occupationId, worker.expectation) / Math.max(1, contract.plan.wage) * 30
       - (usesScreening && agePreference && worker.age > agePreference ? 9 : 0)
     matching.sort((left, right) => match(right) - match(left) || left.id.localeCompare(right.id))
     const channel = company.strategy === 'premium' ? 'referral' : 'platform'
@@ -196,6 +198,7 @@ function processContracts(state: GameState, companies: Map<string, Company>, led
   const deliveries = new Map<string, ProjectDelivery>()
   const purchased = new Map<string, Array<{ seats: number; quality: number }>>()
   const capacity = new Map(state.suppliers.map(supplier => [supplier.id, supplier.capacity]))
+  const tenders = new Map(state.tenders.map(tender => [tender.id, tender]))
   const byContract = new Map<string, Worker[]>()
   for (const worker of state.workers) {
     if (worker.contractId) addWorker(byContract, worker.contractId, worker)
@@ -208,6 +211,7 @@ function processContracts(state: GameState, companies: Map<string, Company>, led
     if (!ledger || !company) continue
     const player = company.id === state.player.id
     const client = state.clients.find(item => item.id === contract.clientId)
+    const tender = tenders.get(contract.tenderId)
     const ramp = mobilizationShare(contract.plan, state.month - (contract.signedAt ?? state.month) + 1)
     const workers = (byContract.get(contract.id) ?? []).filter(worker => worker.employerId === company.id)
       .slice(0, Math.ceil(staffedSeats(contract.plan) * ramp))
@@ -223,25 +227,19 @@ function processContracts(state: GameState, companies: Map<string, Company>, led
     const children = purchased.get(contract.id) ?? []
     const childSeats = children.reduce((sum, item) => sum + item.seats, 0)
     const covered = Math.min(contract.headcount, workers.length + supplied + childSeats)
-    const skill = (workers.reduce((sum, worker) => sum + worker.skill * (0.79 + worker.efficiency / 320), 0)
+    const skill = (workers.reduce((sum, worker) => sum + effectiveSkill(worker), 0)
       + supplied * chainQuality * 0.86 + children.reduce((sum, item) => sum + item.seats * item.quality * 0.88, 0))
       / Math.max(1, workers.length + supplied + childSeats)
     const satisfaction = workers.length ? workers.reduce((sum, worker) => sum + worker.satisfaction, 0) / workers.length : 62
     const fatigue = workers.length ? workers.reduce((sum, worker) => sum + worker.fatigue, 0) / workers.length : 17
-    const efficiency = 1 + Math.min(0.13, company.tech * 0.0033)
-      + (player && state.technologies.includes('scheduling') ? 0.041 : 0)
-      + (player && state.technologies.includes('analytics') ? 0.016 : 0)
-      - (contract.plan.manager === 'client' && contract.business === 'delivery' ? 0.065 : 0)
-    const output = evaluateDelivery({ seats: contract.headcount, covered, skill, targetSkill: contract.plan.skill,
+    const efficiency = deliveryEfficiency(state, company, contract.business, contract.plan)
+    const targetSkill = contractSkillTarget(contract, tender)
+    const output = evaluateDelivery({ seats: contract.headcount, covered, skill, targetSkill,
       satisfaction, fatigue, management: Math.min(100, contract.plan.management / 10), efficiency })
     const attendance = covered / Math.max(1, contract.headcount)
-    const fullPrice = contract.plan.price * contract.headcount
-    const base = contract.business === 'delivery'
-      ? fullPrice * (attendance * 0.31 + Math.min(1.08, output.output) * 0.69) : contract.plan.price * covered
-    const bonus = contract.business === 'delivery' ? fullPrice * deliveryBonus(output.quality, contract.qualityTarget, attendance) : 0
-    const penalty = yuan(Math.min(base * 0.43, fullPrice * (
-      Math.max(0, contract.attendanceTarget - attendance) * 0.25 + Math.max(0, contract.qualityTarget - output.quality) * 0.0036)))
-    contract.revenue = Math.max(0, yuan(base + bonus - penalty))
+    const { revenue, penalty } = serviceRevenue(contract.business, contract.plan.price, contract.headcount,
+      output.quality, contract.qualityTarget, attendance, contract.attendanceTarget, output.output)
+    contract.revenue = revenue
     contract.cumulativeRevenue += contract.revenue
     contract.penalties += penalty
     contract.attendance = attendance
@@ -256,6 +254,13 @@ function processContracts(state: GameState, companies: Map<string, Company>, led
     ledger.report.revenue += contract.revenue
     ledger.report.penalty += penalty
     ledger.report.suppliers += contract.lastSupplierCost
+    if (player && ((state.setup.scenario === 'shortage' && isShortageMonth(state.month) && isShortageRole(contract.occupationId))
+      || (state.setup.scenario === 'quality' && state.month >= SCENARIO_MONTHS - 3 && state.month < SCENARIO_MONTHS && tender?.business === 'delivery'))) {
+      const delivery = ledger.report.scenarioDelivery ??= { planned: 0, covered: 0, qualityTotal: 0 }
+      delivery.planned += contract.headcount
+      delivery.covered += covered
+      delivery.qualityTotal += covered * output.quality
+    }
     const managementDiscount = player && state.technologies.includes('payroll') ? 0.81 : 1
     ledger.report.management += yuan(workers.length * contract.plan.management * managementDiscount)
     ledger.report.training += yuan(workers.length * contract.plan.training)
